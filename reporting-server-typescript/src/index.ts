@@ -2,13 +2,42 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const DEFAULT_REPORTING_API_BASE_URL = "https://jsonplaceholder.typicode.com";
-const REPORTING_API_BASE_URL =
-  process.env.REPORTING_API_BASE_URL ?? DEFAULT_REPORTING_API_BASE_URL;
-const REPORTING_API_KEY = process.env.REPORTING_API_KEY;
+const DEFAULT_QUICKBOOKS_API_BASE_URL = "https://quickbooks.api.intuit.com";
+const QUICKBOOKS_API_BASE_URL =
+  process.env.QUICKBOOKS_API_BASE_URL ?? DEFAULT_QUICKBOOKS_API_BASE_URL;
+const DEFAULT_REALM_ID = process.env.QUICKBOOKS_REALM_ID;
+const DEFAULT_ACCESS_TOKEN = process.env.QUICKBOOKS_ACCESS_TOKEN;
 
 type QueryParamValue = string | number | boolean;
 type QueryParams = Record<string, QueryParamValue>;
+type ScalarRecord = Record<string, unknown>;
+
+const KNOWN_QUICKBOOKS_REPORTS = [
+  "BalanceSheet",
+  "ProfitAndLoss",
+  "ProfitAndLossDetail",
+  "TrialBalance",
+  "CashFlow",
+  "InventoryValuationSummary",
+  "InventoryValuationDetail",
+  "CustomerSales",
+  "ItemSales",
+  "DepartmentSales",
+  "ClassSales",
+  "CustomerIncome",
+  "CustomerBalance",
+  "CustomerBalanceDetail",
+  "AgedReceivables",
+  "AgedReceivableDetail",
+  "VendorBalance",
+  "VendorBalanceDetail",
+  "AgedPayables",
+  "AgedPayableDetail",
+  "VendorExpenses",
+  "AccountListDetail",
+  "GeneralLedgerDetail",
+  "TaxSummary",
+] as const;
 
 function normalizeQueryParams(raw: unknown): QueryParams | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -29,31 +58,76 @@ function normalizeQueryParams(raw: unknown): QueryParams | undefined {
   return query;
 }
 
-function normalizePayload(raw: unknown): Record<string, unknown> | undefined {
+function normalizeScalarRecord(raw: unknown): ScalarRecord | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return undefined;
   }
 
-  return raw as Record<string, unknown>;
+  return raw as ScalarRecord;
 }
 
-function buildReportingApiUrl(endpoint: string, query?: QueryParams): URL {
-  if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) {
-    throw new Error(
-      "Endpoint must be relative (for example: /posts or /reports/daily).",
-    );
+function addQueryParams(url: URL, query?: QueryParams): URL {
+  if (!query) {
+    return url;
   }
 
-  const normalizedEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
-  const url = new URL(normalizedEndpoint, REPORTING_API_BASE_URL);
-
-  if (query) {
-    for (const [key, value] of Object.entries(query)) {
-      url.searchParams.set(key, String(value));
-    }
+  for (const [key, value] of Object.entries(query)) {
+    url.searchParams.set(key, String(value));
   }
 
   return url;
+}
+
+function buildQuickBooksReportUrl(
+  realmId: string,
+  reportName: string,
+  query?: QueryParams,
+): URL {
+  const normalizedBase = QUICKBOOKS_API_BASE_URL.endsWith("/")
+    ? QUICKBOOKS_API_BASE_URL
+    : `${QUICKBOOKS_API_BASE_URL}/`;
+  const endpoint = `v3/company/${encodeURIComponent(realmId)}/reports/${encodeURIComponent(
+    reportName,
+  )}`;
+  const url = new URL(endpoint, normalizedBase);
+
+  return addQueryParams(url, query);
+}
+
+function parseDateValue(value: QueryParamValue | undefined): Date | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function buildDateRangeWarning(query?: QueryParams): string | null {
+  if (!query) {
+    return null;
+  }
+
+  const start = parseDateValue(query.start_date);
+  const end = parseDateValue(query.end_date);
+  if (!start || !end) {
+    return null;
+  }
+
+  const msInDay = 24 * 60 * 60 * 1000;
+  const diffDays = Math.floor((end.getTime() - start.getTime()) / msInDay);
+  if (diffDays <= 183) {
+    return null;
+  }
+
+  return [
+    "Warning: date range is greater than six months.",
+    "QuickBooks recommends limiting report requests to about six months.",
+  ].join("\n");
 }
 
 function formatApiBody(body: unknown): string {
@@ -64,141 +138,273 @@ function formatApiBody(body: unknown): string {
   return JSON.stringify(body, null, 2);
 }
 
-async function makeReportingRequest(
-  method: "GET" | "POST",
-  endpoint: string,
+function formatQuickBooksErrorResponse(
+  status: number,
+  statusText: string,
+  url: URL,
+  body: string,
+): string {
+  return [
+    `QuickBooks report request failed (${status} ${statusText})`,
+    `URL: ${url.toString()}`,
+    "",
+    "Response:",
+    body,
+  ].join("\n");
+}
+
+async function runQuickBooksReportRequest(
+  realmId: string,
+  accessToken: string,
+  reportName: string,
   query?: QueryParams,
-  payload?: Record<string, unknown>,
 ): Promise<string> {
-  let url: URL;
-  try {
-    url = buildReportingApiUrl(endpoint, query);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown URL error";
-    return `Unable to build reporting API URL: ${message}`;
-  }
+  const url = buildQuickBooksReportUrl(realmId, reportName, query);
 
   const headers: Record<string, string> = {
     Accept: "application/json",
-    "User-Agent": "mcp-reporting-server/1.0",
+    "User-Agent": "mcp-quickbooks-reporting-server/1.0",
+    Authorization: `Bearer ${accessToken}`,
   };
 
-  if (REPORTING_API_KEY) {
-    headers.Authorization = `Bearer ${REPORTING_API_KEY}`;
-  }
-
-  let body: string | undefined;
-  if (method === "POST") {
-    headers["Content-Type"] = "application/json";
-    body = JSON.stringify(payload ?? {});
-  }
-
   try {
-    const response = await fetch(url, { method, headers, body });
+    const response = await fetch(url, { method: "GET", headers });
     const contentType = response.headers.get("content-type") ?? "";
     const responseBody: unknown = contentType.includes("application/json")
       ? await response.json()
       : await response.text();
     const formattedBody = formatApiBody(responseBody);
+    const warning = buildDateRangeWarning(query);
 
     if (!response.ok) {
-      return [
-        `Reporting API request failed (${response.status} ${response.statusText})`,
-        `URL: ${url.toString()}`,
-        "",
-        "Response:",
+      return formatQuickBooksErrorResponse(
+        response.status,
+        response.statusText,
+        url,
         formattedBody,
-      ].join("\n");
+      );
     }
 
-    return [
-      `Reporting API response (${response.status} ${response.statusText})`,
+    const output = [
+      `QuickBooks report response (${response.status} ${response.statusText})`,
+      `Report: ${reportName}`,
       `URL: ${url.toString()}`,
       "",
       "Body:",
       formattedBody,
-    ].join("\n");
+    ];
+
+    if (warning) {
+      output.unshift("", warning);
+    }
+
+    return output.join("\n");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown network error";
-    return `Unable to call reporting API: ${message}`;
+    return `Unable to call QuickBooks Reports API: ${message}`;
   }
 }
 
+function resolveQuickBooksCredentials(input: {
+  realmId?: string;
+  accessToken?: string;
+}): { realmId: string; accessToken: string } | { error: string } {
+  const realmId = input.realmId ?? DEFAULT_REALM_ID;
+  const accessToken = input.accessToken ?? DEFAULT_ACCESS_TOKEN;
+
+  if (!realmId) {
+    return {
+      error:
+        "Missing realm ID. Set QUICKBOOKS_REALM_ID or pass realmId in the tool arguments.",
+    };
+  }
+
+  if (!accessToken) {
+    return {
+      error:
+        "Missing access token. Set QUICKBOOKS_ACCESS_TOKEN or pass accessToken in the tool arguments.",
+    };
+  }
+
+  return { realmId, accessToken };
+}
+
 const server = new McpServer({
-  name: "reporting-api",
+  name: "quickbooks-reporting-api",
   version: "1.0.0",
 });
 
 server.registerTool(
-  "get-report",
+  "run-quickbooks-report",
   {
-    title: "Get Report",
-    description: "Fetch reporting data from an online API endpoint using GET.",
+    title: "Run QuickBooks Report",
+    description:
+      "Run any QuickBooks Online report endpoint (Reports API) and return JSON.",
     inputSchema: {
-      endpoint: z
+      reportName: z
         .string()
         .min(1)
-        .describe("Relative API endpoint path (example: /posts or /reports/daily)"),
+        .describe("QuickBooks report endpoint name, e.g. ProfitAndLoss"),
       query: z
         .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
         .optional()
-        .describe("Optional query parameters (key/value pairs)."),
-    },
-  },
-  async ({ endpoint, query }) => ({
-    content: [
-      {
-        type: "text",
-        text: await makeReportingRequest(
-          "GET",
-          endpoint,
-          normalizeQueryParams(query),
+        .describe(
+          "Optional report query params (e.g. start_date, end_date, customer, summarize_column_by).",
         ),
-      },
-    ],
-  }),
-);
-
-server.registerTool(
-  "create-report",
-  {
-    title: "Create Report",
-    description: "Send reporting payload data to an online API endpoint using POST.",
-    inputSchema: {
-      endpoint: z
+      realmId: z
         .string()
         .min(1)
-        .describe("Relative API endpoint path (example: /posts or /reports/run)"),
-      payload: z
-        .record(z.string(), z.unknown())
         .optional()
-        .describe("Optional JSON payload sent in the request body."),
-      query: z
-        .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+        .describe("QuickBooks company realm ID. Overrides QUICKBOOKS_REALM_ID."),
+      accessToken: z
+        .string()
+        .min(1)
         .optional()
-        .describe("Optional query parameters (key/value pairs)."),
+        .describe("OAuth bearer token. Overrides QUICKBOOKS_ACCESS_TOKEN."),
     },
   },
-  async ({ endpoint, payload, query }) => ({
-    content: [
-      {
-        type: "text",
-        text: await makeReportingRequest(
-          "POST",
-          endpoint,
-          normalizeQueryParams(query),
-          normalizePayload(payload),
-        ),
-      },
-    ],
-  }),
+  async ({ reportName, query, realmId, accessToken }) => {
+    const credentials = resolveQuickBooksCredentials({
+      realmId,
+      accessToken,
+    });
+
+    if ("error" in credentials) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: credentials.error,
+          },
+        ],
+      };
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: await runQuickBooksReportRequest(
+            credentials.realmId,
+            credentials.accessToken,
+            reportName,
+            normalizeQueryParams(query),
+          ),
+        },
+      ],
+    };
+  },
 );
 
 server.registerTool(
-  "reporting-api-config",
+  "get-profit-and-loss-report",
   {
-    title: "Reporting API Config",
-    description: "Show the active reporting API configuration used by this server.",
+    title: "Get Profit and Loss Report",
+    description:
+      "Run QuickBooks ProfitAndLoss report with the most common query parameters.",
+    inputSchema: {
+      startDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional()
+        .describe("start_date in yyyy-mm-dd format"),
+      endDate: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional()
+        .describe("end_date in yyyy-mm-dd format"),
+      customer: z.string().optional().describe("Optional customer id filter"),
+      summarizeColumnBy: z
+        .string()
+        .optional()
+        .describe("Optional summarize_column_by value (for example: Customers)"),
+      accountingMethod: z
+        .enum(["Cash", "Accrual"])
+        .optional()
+        .describe("Optional accounting_method value."),
+      realmId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("QuickBooks company realm ID. Overrides QUICKBOOKS_REALM_ID."),
+      accessToken: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("OAuth bearer token. Overrides QUICKBOOKS_ACCESS_TOKEN."),
+      extraQuery: z
+        .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+        .optional()
+        .describe("Any additional query parameters to include."),
+    },
+  },
+  async ({
+    startDate,
+    endDate,
+    customer,
+    summarizeColumnBy,
+    accountingMethod,
+    realmId,
+    accessToken,
+    extraQuery,
+  }) => {
+    const credentials = resolveQuickBooksCredentials({
+      realmId,
+      accessToken,
+    });
+
+    if ("error" in credentials) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: credentials.error,
+          },
+        ],
+      };
+    }
+
+    const query: QueryParams = {
+      ...(normalizeQueryParams(normalizeScalarRecord(extraQuery)) ?? {}),
+    };
+    if (startDate) {
+      query.start_date = startDate;
+    }
+    if (endDate) {
+      query.end_date = endDate;
+    }
+    if (customer) {
+      query.customer = customer;
+    }
+    if (summarizeColumnBy) {
+      query.summarize_column_by = summarizeColumnBy;
+    }
+    if (accountingMethod) {
+      query.accounting_method = accountingMethod;
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: await runQuickBooksReportRequest(
+            credentials.realmId,
+            credentials.accessToken,
+            "ProfitAndLoss",
+            query,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  "list-quickbooks-reports",
+  {
+    title: "List QuickBooks Report Endpoints",
+    description:
+      "Return a curated list of common QuickBooks Online Reports API endpoint names.",
     inputSchema: {},
   },
   async () => ({
@@ -206,9 +412,30 @@ server.registerTool(
       {
         type: "text",
         text: [
-          "Reporting MCP server configuration:",
-          `- Base URL: ${REPORTING_API_BASE_URL}`,
-          `- Auth header enabled: ${REPORTING_API_KEY ? "yes" : "no"}`,
+          "Common QuickBooks Online report endpoints:",
+          ...KNOWN_QUICKBOOKS_REPORTS.map((name) => `- ${name}`),
+        ].join("\n"),
+      },
+    ],
+  }),
+);
+
+server.registerTool(
+  "quickbooks-reporting-config",
+  {
+    title: "QuickBooks Reporting Config",
+    description: "Show active QuickBooks reporting API configuration.",
+    inputSchema: {},
+  },
+  async () => ({
+    content: [
+      {
+        type: "text",
+        text: [
+          "QuickBooks reporting MCP server configuration:",
+          `- Base URL: ${QUICKBOOKS_API_BASE_URL}`,
+          `- Default realm configured: ${DEFAULT_REALM_ID ? "yes" : "no"}`,
+          `- Default access token configured: ${DEFAULT_ACCESS_TOKEN ? "yes" : "no"}`,
         ].join("\n"),
       },
     ],
@@ -218,7 +445,7 @@ server.registerTool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Reporting MCP Server running on stdio");
+  console.error("QuickBooks Reporting MCP Server running on stdio");
 }
 
 main().catch((error) => {

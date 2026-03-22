@@ -1,24 +1,27 @@
-# MCP Reporting Server (TypeScript)
+# MCP QuickBooks Reporting Server (TypeScript)
 
-An MCP server that exposes an online reporting API as tools.
+An MCP server that exposes the **QuickBooks Online Reports API** as MCP tools.
 
 ## Tools
 
-- `get-report`
-  - Sends a `GET` request to a relative endpoint on the configured reporting API.
-  - Accepts optional query parameters.
-- `create-report`
-  - Sends a `POST` request to a relative endpoint on the configured reporting API.
-  - Accepts optional query parameters and JSON payload.
-- `reporting-api-config`
-  - Returns the active server base URL and whether auth is enabled.
+- `run-quickbooks-report`
+  - Runs any QuickBooks report endpoint, for example `ProfitAndLoss` or `BalanceSheet`.
+  - Accepts optional `query`, plus optional `realmId` and `accessToken` overrides.
+- `get-profit-and-loss-report`
+  - Convenience tool for `ProfitAndLoss` with common query args:
+    `startDate`, `endDate`, `customer`, `summarizeColumnBy`, `accountingMethod`.
+- `list-quickbooks-reports`
+  - Returns a curated list of common QuickBooks report endpoint names.
+- `quickbooks-reporting-config`
+  - Returns active base URL and whether default realm/token are configured.
 
 ## Configuration
 
-You can configure the API target with environment variables:
+Set QuickBooks credentials through environment variables:
 
-- `REPORTING_API_BASE_URL` (optional, default: `https://jsonplaceholder.typicode.com`)
-- `REPORTING_API_KEY` (optional bearer token)
+- `QUICKBOOKS_API_BASE_URL` (optional, default: `https://quickbooks.api.intuit.com`)
+- `QUICKBOOKS_REALM_ID` (recommended)
+- `QUICKBOOKS_ACCESS_TOKEN` (recommended OAuth Bearer token)
 
 ## Build
 
@@ -35,6 +38,10 @@ node build/index.js
 
 ## Example tool calls
 
-- `get-report` with endpoint `/posts` and query `{ "userId": 1 }`
-- `get-report` with endpoint `/posts/1`
-- `create-report` with endpoint `/posts` and payload `{ "title": "Daily KPI", "body": "Revenue +4.2%" }`
+- `run-quickbooks-report` with:
+  - `reportName`: `"ProfitAndLoss"`
+  - `query`: `{ "start_date": "2025-01-01", "end_date": "2025-03-31", "summarize_column_by": "Customers" }`
+- `get-profit-and-loss-report` with:
+  - `startDate`: `"2025-01-01"`
+  - `endDate`: `"2025-03-31"`
+  - `accountingMethod`: `"Accrual"`

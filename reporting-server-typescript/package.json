@@ -19,7 +19,7 @@
   ],
   "author": "",
   "license": "ISC",
-  "description": "MCP server that exposes an online reporting API as tools",
+  "description": "MCP server exposing QuickBooks Online Reports API as tools",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "zod": "^4.3.6"
