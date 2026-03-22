@@ -1,0 +1,31 @@
+{
+  "name": "mcp-reporting-server-ts",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "reporting": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\""
+  },
+  "files": [
+    "build"
+  ],
+  "keywords": [
+    "mcp",
+    "reporting",
+    "api"
+  ],
+  "author": "",
+  "license": "ISC",
+  "description": "MCP server that exposes an online reporting API as tools",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.9.3"
+  }
+}
