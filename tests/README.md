@@ -6,7 +6,7 @@ This directory contains smoke tests for the MCP quickstart examples. These tests
 
 The smoke tests verify:
 
-- **Servers**: Each weather server (Python, TypeScript, Rust) can start and respond to MCP protocol requests
+- **Servers**: Each example server (weather + reporting) can start and respond to MCP protocol requests
 - **Clients**: Each MCP client (Python, TypeScript) can connect to a mock server and list tools
 
 ## Running Tests

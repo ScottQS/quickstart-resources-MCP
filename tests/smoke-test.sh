@@ -52,6 +52,15 @@ test_weather_server_typescript() {
     node "${TEST_CLIENT}" node "${server_dir}/build/index.js"
 }
 
+# Test: TypeScript reporting server
+test_reporting_server_typescript() {
+    check_dependency node
+    check_dependency npm
+    local server_dir="${PROJECT_ROOT}/reporting-server-typescript"
+    ensure_built "${server_dir}"
+    node "${TEST_CLIENT}" node "${server_dir}/build/index.js"
+}
+
 # Test: Rust weather server
 test_weather_server_rust() {
     check_dependency cargo
@@ -88,6 +97,7 @@ test_mcp_client_typescript() {
 print_header "Running smoke tests"
 run_test "weather-server-python" test_weather_server_python
 run_test "weather-server-typescript" test_weather_server_typescript
+run_test "reporting-server-typescript" test_reporting_server_typescript
 run_test "weather-server-rust" test_weather_server_rust
 run_test "mcp-client-python" test_mcp_client_python
 run_test "mcp-client-typescript" test_mcp_client_typescript
